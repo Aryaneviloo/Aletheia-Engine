@@ -8,20 +8,44 @@ services:
     volumes:
       - ./services/gateway:/app
     environment:
-      - DATABASE_URL=postgresql://aryan:sovereign_pass@db:5432/aletheia_db
-      - OLLAMA_URL=http://ollama:11434
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=redis://redis:6379/0
     depends_on:
        db:
           condition: service_healthy
-       ollama:
+       redis:
           condition: service_started
     networks:
       - aletheia-net
+
+  worker:
+    build: ./services/gateway
+    command: celery -A worker.celery_app worker --loglevel=info --concurrency=1
+    volumes: 
+      - ./services/gateway:/app
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=redis://redis:6379/0
+      - OLLAMA_URL=http://ollama:11434
+    depends_on:
+      - db 
+      - redis
+      - ollama
+    networks:
+      - aletheia-net
+  
+  redis:
+    image: redis:7-alpine
+    container_name: aletheia-fabric
+    networks:
+      - aletheia-net
+      
+  
   db:
     image: pgvector/pgvector:pg16
     environment: 
      - POSTGRES_USER=aryan
-     - POSTGRES_PASSWORD=sovereign_pass
+     - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
      - POSTGRES_DB=aletheia_db
     volumes: 
      - postgres_data:/var/lib/postgresql/data
