@@ -5,3 +5,4 @@ __pycache__/
 .venv/
 services/db_data/
 services/ollama_data/
+*.pyc
