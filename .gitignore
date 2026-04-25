@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.py[cod]
+*.class
+.venv/
+services/db_data/
+services/ollama_data/

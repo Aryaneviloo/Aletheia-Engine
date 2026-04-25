@@ -1,0 +1,49 @@
+version: '3.9'
+
+services:
+  gateway:
+    build: ./services/gateway
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./services/gateway:/app
+    environment:
+      - DATABASE_URL=postgresql://aryan:sovereign_pass@db:5432/aletheia_db
+      - OLLAMA_URL=http://ollama:11434
+    depends_on:
+       db:
+          condition: service_healthy
+       ollama:
+          condition: service_started
+    networks:
+      - aletheia-net
+  db:
+    image: pgvector/pgvector:pg16
+    environment: 
+     - POSTGRES_USER=aryan
+     - POSTGRES_PASSWORD=sovereign_pass
+     - POSTGRES_DB=aletheia_db
+    volumes: 
+     - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+     test: ["CMD-SHELL", "pg_isready -U aryan -d aletheia_db"]
+     interval: 5s
+     timeout: 5s
+     retries: 5
+    networks:
+     - aletheia-net
+  ollama:
+    image: ollama/ollama:latest
+    container_name: aletheia-voice
+    volumes: 
+     - ollama_data:/root/.ollama
+    networks:
+     - aletheia-net
+     
+networks:
+  aletheia-net:
+    driver: bridge
+
+volumes:
+   postgres_data:
+   ollama_data:
