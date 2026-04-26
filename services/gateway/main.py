@@ -3,7 +3,6 @@ import io
 import httpx
 import numpy as np
 import uuid
-import matplotlib.pyplot as plt
 import json
 from celery import Celery
 
@@ -17,7 +16,13 @@ from sqlalchemy import Column, String, Integer, Text, create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from pgvector.sqlalchemy import Vector
-from sklearn.decomposition import PCA
+
+from umap import UMAP
+from sklearn.cluster import KMeans
+
+
+
+
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
@@ -79,6 +84,38 @@ def get_db():
     finally:
         db.close()
 
+@app.get("/constellations")
+def get_constellation(db:Session = Depends(get_db)):
+    """
+    HAHAHA SABKUCH TARA HAI
+    """
+    records = db.query(IngestionRecord).all()
+    if len(records) < 10:
+        raise HTTPException(
+            status_code=400,
+            detail="Archives need more data"
+        )
+    embeddings=np.array([r.embedding for r in records])
+
+    reducer = UMAP(n_components=3, n_neighbors=15, min_dist=0.1, metric='cosine', random_state=42)
+    coords_3d = reducer.fit_transform(embeddings)
+
+    num_cluster = min(len(records) // 5+1, 8)
+    kmeans = KMeans(n_clusters=num_cluster, n_init=10)
+    clusters = kmeans.fit_predict(coords_3d)
+
+    points = []
+    for i, r in enumerate(records):
+        points.append({
+            "id": r.id,
+            "text": r.content[:100] + "...",
+            "pos": coords_3d[i].tolist(),
+            "cluster": int(clusters[i])
+                    
+        })
+
+    return {"points": points, "clusters_found": num_cluster}
+
 @app.post("/ingest", status_code=202)
 async def ingest_data(request: IngestionRequest):
     job_id = str(uuid.uuid4())
@@ -96,31 +133,7 @@ def semantic_search(query: str, db: Session = Depends(get_db)):
   pass
 
         
-@app.get("/visualize")
-def visualize_knowledge(db: Session = Depends(get_db)):
-    records = db.query(IngestionRecord).all()
-    if len(records) < 2:
-        raise HTTPException(status_code=400, detail="Insufficient")
-    
-    embeddings=np.array([r.embedding for r in records])
-    labels=[r.content[:30] + "..." for r in records]
 
-    pca=PCA(n_components=2)
-    coords=pca.fit_transform(embeddings)
-
-    plt.figure(figsize=(10,6))
-    plt.scatter(coords[:, 0], coords[:, 1], c='blue', edgecolors='white')
-    for i, label in enumerate(labels):
-        plt.annotate(label, (coords[i, 0], coords[i, 1]), fontsize=8, alpha=0.7)
-    
-    plt.title("Aletheia Knowlegde Constellations")
-    plt.grid(True, linestyle='--', alpha = 0.6)
-
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png')
-    buf.seek(0)
-    plt.close()
-    return StreamingResponse(buf, media_type="image/png")
 
 @app.post("/synthesize")
 def synthesize_knowledge(request: SearchRequest):
@@ -170,6 +183,8 @@ async def stream_synthesis(request: SearchRequest, db: Session = Depends(get_db)
         IngestionRecord.embedding.cosine_distance(query_vector)
     ).limit(3).all()
 
+    active_star_ids = [r.id for r in records]
+
     if not records:
         async def silent_generator():
             yield "data: {\"token\": \"The archives are silent on this matter.\", \"done\": true}\n\n"
@@ -179,6 +194,7 @@ async def stream_synthesis(request: SearchRequest, db: Session = Depends(get_db)
     prompt = f"Context: {context}\n\nQuestion: {request.query}"
 
     async def token_generator():
+        yield f"data: {json.dumps({'active_stars': active_star_ids})}\n\n"
         async with httpx.AsyncClient(timeout=120.0) as client:
             async with client.stream(
                 "POST",
