@@ -4,10 +4,12 @@ import httpx
 import numpy as np
 import uuid
 import matplotlib.pyplot as plt
+import json
 from celery import Celery
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File
 from fastapi.responses import StreamingResponse
+from sentence_transformers import SentenceTransformer
 from pydantic import BaseModel, HttpUrl, ConfigDict
 from typing import Optional, List
 
@@ -17,11 +19,12 @@ from sqlalchemy.orm import sessionmaker, Session
 from pgvector.sqlalchemy import Vector
 from sklearn.decomposition import PCA
 
-
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 celery_app = Celery("aletheia_tasks", broker=REDIS_URL, backend=REDIS_URL)
 
-
+print("Director: Loading the BGE Faculty for real-time perception...")
+model = SentenceTransformer('BAAI/bge-small-en-v1.5')
 
 #database krke dekhte
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -136,3 +139,57 @@ def synthesize_knowledge(request: SearchRequest):
         return {"answer": answer, "status": "Synthesized from background labor"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"The Worker failed to synthesize: {str(e)}")
+    
+@app.post("/upload")
+async def upload_document(file: UploadFile = File(...), user_id: str="Aryan"):
+    try:
+        content = await file.read()
+        filename = file.filename
+
+        task = celery_app.send_task("tasks.process_document", args=[filename, content, user_id])
+
+        return {
+            "status": "Document queued for processing",
+            "task_id": task.id,
+            "filename": filename
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read: {str(e)}")
+    
+
+
+@app.post("/stream")
+async def stream_synthesis(request: SearchRequest, db: Session = Depends(get_db)):
+    """
+    Async Synthesis
+    Lets have near zero latency via SSE
+    """
+
+    query_vector = model.encode(request.query).tolist()
+    records = db.query(IngestionRecord).order_by(
+        IngestionRecord.embedding.cosine_distance(query_vector)
+    ).limit(3).all()
+
+    if not records:
+        async def silent_generator():
+            yield "data: {\"token\": \"The archives are silent on this matter.\", \"done\": true}\n\n"
+        return StreamingResponse(silent_generator(), media_type="text/event-stream")
+    
+    context = '\n'.join([r.content for r in records])
+    prompt = f"Context: {context}\n\nQuestion: {request.query}"
+
+    async def token_generator():
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            async with client.stream(
+                "POST",
+                f"{OLLAMA_URL}/api/generate",
+                json={"model": "llama3.2:1b", "prompt": prompt, "stream": True}
+            ) as response:
+                async for line in response.aiter_lines():
+                    if line:
+                        chunk = json.loads(line)
+                        token = chunk.get("response", "")
+                        yield f"data: {json.dumps({'token': token})}\n\n"
+                        if chunk.get("done"):
+                            break
+    return StreamingResponse(token_generator(), media_type="text/event-stream")

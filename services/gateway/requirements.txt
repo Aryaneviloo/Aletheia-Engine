@@ -3,7 +3,6 @@ uvicorn[standard]==0.27.1
 pydantic[email]==2.6.1
 sqlalchemy==2.0.27
 psycopg2-binary==2.9.9
-python-multipart==0.0.9
 sentence-transformers==2.5.1
 pgvector==0.2.5
 numpy<2.0.0
@@ -12,3 +11,5 @@ scikit-learn>=1.4.0
 matplotlib>=3.8.0
 celery==5.3.6
 redis==5.0.3
+pymupdf==1.27.2.2
+python-multipart==0.0.26

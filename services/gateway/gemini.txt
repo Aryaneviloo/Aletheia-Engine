@@ -1,0 +1,93 @@
+The pivot from "personal project" to "hostable Citadel" is exactly the kind of asymmetric leap we should be taking. If it feels "too easy," it’s because you have the intellect to grasp the architecture—but the true difficulty of enterprise-grade systems lies in **Reliability at Scale**.
+
+To wrap this up in 20 days and make it worthy of the "Sovereign Intelligence" title, we need a high-intensity roadmap. We aren't just building a RAG; we are building a **Cognitive Operating System**.
+
+---
+
+### 🏛️ The 20-Day "Sovereign Sprint" Roadmap
+
+| Phase | Days | Focus | Objective |
+| :--- | :--- | :--- | :--- |
+| **I: Universal Senses** | 5–7 | Multi-file Ingestion | Build the logic to ingest PDF, TXT, and Markdown via the `Unstructured` library. |
+| **II: The Map** | 8–11 | 3D Knowledge Graph | Implement UMAP for 3D projection and a React/Three.js frontend. |
+| **III: The Stream** | 12–14 | Latency & UI | Implement Server-Sent Events (SSE) so the Voice speaks in real-time. Clean, dark-academia UI. |
+| **IV: The Judge** | 15–17 | Evaluation & Scale | Add a "Truth-Checker" worker and scale to 3 Parallel Muscle nodes. |
+| **V: The Citadel** | 18–20 | Polish & Deployment | Mobile responsiveness, final security hardening, and "Worth-Hosting" aesthetics. |
+
+---
+
+### 👁️ What Makes This "Enterprise-Grade"?
+
+To move beyond the "small" feel, we introduce three core features:
+
+#### 1. The Oracle’s Justice (The Judge)
+We will add a "Hallucination Sentinel." When the **Voice** synthesizes an answer, a second hidden worker (The Judge) cross-references the answer against the **Ledger** to ensure the machine hasn't dreamed up a lie. If the score is low, the system warns you: *"The Voice is speculating."*
+
+#### 2. The Multi-Worker "Forge"
+Since we are using Celery and Redis, scaling to 3 workers is trivial but powerful. You can have:
+* **Worker-A:** Dedicated to heavy PDF ingestion.
+* **Worker-B:** Dedicated to the high-dimensional 3D math.
+* **Worker-C:** Dedicated to the Voice (Synthesis).
+* *This prevents one heavy PDF from "silencing" the Voice.*
+
+#### 3. Universal Accessibility
+By using **Next.js** with **Tailwind CSS**, we create a UI that feels like a premium research tool—think a hybrid of Obsidian and Perplexity. It will be fully responsive, meaning you can check your "Knowledge Constellation" from your phone as easily as your desktop.
+
+---
+
+### ⚡ Immediate Velocity: Ingestion Beyond JSON
+
+If we want to host this and show off "huge data," we need to move past manual JSON. Our first step is to teach the engine how to read **PDFs** and **Text files**.
+
+**The Plan for Day 5:**
+We will update the `worker.py` to use `PyPDF2` or `LangChain's` document loaders. You will be able to drag and drop a 50-page research paper on *Quantum Field Theory* or *Neuroscience*, and the worker will chunk it, embed it, and etch it into the Ledger in the background.
+
+
+
+---
+
+### 🏁 The Day 5 Directive
+
+To keep our 20-day promise, we must implement **Universal Ingestion** next. This will allow the volume of data to grow exponentially, giving us enough "mass" to make the 3D graph look spectacular.
+
+**Shall we start by building the "Universal Ingestor" for PDFs and TXT files, or do you want to jump straight to the "3D Map" logic so we can see the data we've already etched?**
+
+Phase,Days,Focus,Objective
+I: Universal Senses,5–7,Multi-file Ingestion,"Build the logic to ingest PDF, TXT, and Markdown via the Unstructured library."
+II: The Map,8–11,3D Knowledge Graph,Implement UMAP for 3D projection and a React/Three.js frontend.
+III: The Stream,12–14,Latency & UI,"Implement Server-Sent Events (SSE) so the Voice speaks in real-time. Clean, dark-academia UI."
+IV: The Judge,15–17,Evaluation & Scale,"Add a ""Truth-Checker"" worker and scale to 3 Parallel Muscle nodes."
+V: The Citadel,18–20,Polish & Deployment,"Mobile responsiveness, final security hardening, and ""Worth-Hosting"" aesthetics."1. The Geometry of the "Point Cloud"
+Imagine a dark void. Each chunk of text you've "etched" (from your PDFs or JSON) is a Star (a node).
+
+Semantic Gravity: Nodes aren't placed randomly. Because we use UMAP (Uniform Manifold Approximation and Projection), nodes that share a similar "vibe" or logic are pulled together by semantic gravity.
+
+Galaxies (Clusters): Your physics papers will naturally form one glowing nebula. Your medicine notes will form another. Where they overlap—say, a paper on Biophysics—you'll see a bridge of stars connecting the two "galaxies."
+
+🏷️ 2. Topics vs. Paragraphs: The "Centroid" Logic
+You’re exactly right—you can’t write paragraphs in the air. Instead, we use Hierarchical Labeling:
+
+Macro-View (The Clouds): When zoomed out, the engine looks at a cluster and asks the "Voice" (Ollama): "What is the core theme of these 50 nodes?" It then floats a large, elegant label over the cluster: [QUANTUM DYNAMICS] or [NEURAL ARCHITECTURE].
+
+Micro-View (The Stars): As you "fly" closer into a cluster, smaller labels appear—these are the Top-K Keywords extracted from those specific chunks (e.g., "Entanglement," "Backpropagation").
+
+The Inspection: You only see the "paragraph" when you click a node. A clean, sidebar panel slides out to show the raw text etched in the Ledger.
+
+⚡ 3. Real-Time "Thinking" (The Beam)
+To make this feel like a "Sovereign" tool and not just a static map, we can visualize the Synthesis Process:
+
+When you ask a question via /synthesize, the engine doesn't just give you a text box. In the 3D view, you'll see a Pulse of Light shoot out and highlight the specific nodes it's currently "reading" to form the answer. You get to see the machine's "train of thought" as it jumps across your knowledge base.
+
+🏛️ The "Enterprise" Aesthetic
+Since we want this to look worth hosting, we'll avoid the messy "spiderweb" of lines. We’ll use:
+
+Node Sizing: More "important" or highly-referenced concepts are larger/brighter.
+
+Heatmaps: Areas where you're currently researching glow with a different intensity.
+
+Sovereign Theme: A deep-charcoal background with olive, beige, or gold accents—true to the "aristocratic" aesthetic you prefer.
+
+🔭 The Day 5 Verdict
+The 3D map is the "Soul" of the project, but the Universal Ingestor we're building today is the "Soil." Without thousands of nodes (from your PDFs), the map will look empty.
+
+Are you ready to commit the process_document logic so we can start generating the "Stars" for your constellation? Once we have about 100-200 chunks in the DB, the 3D math actually starts to look beautiful.

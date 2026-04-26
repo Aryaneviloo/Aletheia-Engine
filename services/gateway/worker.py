@@ -1,11 +1,14 @@
 import os
 import requests 
 import httpx
+import fitz
+import uuid
 from celery import Celery
 from sentence_transformers import SentenceTransformer
-from sqlalchemy import create_engine, Column, String, Text
+from sqlalchemy import create_engine, Column, String, Text, text
 from sqlalchemy.orm import sessionmaker, declarative_base
 from pgvector.sqlalchemy import Vector
+
 
 REDIS_URL=os.getenv("REDIS_URL", "redis://redis:6379/0")
 celery_app=Celery("aletheia_tasks", broker=REDIS_URL, backend=REDIS_URL)
@@ -76,3 +79,46 @@ def process_synthesis(query):
     except Exception as e:
         print(f"Ollama Communication Error: {str(e)}")
         return "The Voice is currently unreachable."
+    
+@celery_app.task(name="tasks.process_document")
+def process_document(filename, content_bytes, user_id):
+    print(f"Muscle of '{filename}' ...")
+    text_content = ""
+
+    try: 
+
+      if filename.lower().endswith(".pdf"):
+        with fitz.open(stream=content_bytes, filetype="pdf") as doc:
+            for page in doc:
+                text_content += page.get_text()
+      else:
+        text_content = content_bytes.decode('utf-8')
+
+      chunk_size = 1200
+      overlap = 200
+      chunks = [text_content[i:i + chunk_size] for i in range(0, len(text_content), chunk_size - overlap)]
+      print(f"Muscle: fragmented '{filename}' into {len(chunks)}")
+
+
+      db = SessionLocal()
+      for i, chunk in enumerate(chunks):
+          embedding = model.encode(chunk).tolist()
+          new_id=str(uuid.uuid4())
+          new_record = IngestionRecord(
+            id=new_id,
+            user_id=user_id,
+            content=f"[{filename} | Chunk{i}] {chunk}",
+            embedding=embedding
+          )
+          db.add(new_record)
+      db.commit()
+      db.close()
+      print(f"Muscle '{filename}' added to the base")
+      return f"Processed {len(chunks)} fragments."
+
+    except Exception as e:
+        print(f"Dissection Error on {filename}: {str(e)}")
+        return f"Failure: {str(e)}"
+    
+
+
