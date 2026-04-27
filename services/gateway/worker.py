@@ -3,6 +3,7 @@ import requests
 import httpx
 import fitz
 import uuid
+import json
 from celery import Celery
 from sentence_transformers import SentenceTransformer
 from sqlalchemy import create_engine, Column, String, Text, text
@@ -26,13 +27,14 @@ class IngestionRecord(Base):
     user_id = Column(String)
     content = Column(Text)
     embedding = Column(Vector(384))
+    collection = Column(String, default="general", index=True)
 
 print("Worker: Loading the BGE")
 model=SentenceTransformer('BAAI/bge-small-en-v1.5')
 
 @celery_app.task(name="tasks.process_ingestion")
-def process_ingestion(job_id, user_id, content, source_url):
-    print(f"Starting Ingestion for {job_id}")
+def process_ingestion(job_id, user_id, content, source_url, collection="general"):
+    print(f"Starting Ingestion for {job_id} in province: {collection}")
 
     vector_coords = model.encode(content).tolist()
     db = SessionLocal()
@@ -41,7 +43,8 @@ def process_ingestion(job_id, user_id, content, source_url):
             id=job_id,
             user_id=user_id,
             content=content,
-            embedding=vector_coords
+            embedding=vector_coords,
+            collection=collection
         )
         db.add(new_record)
         db.commit()
@@ -53,13 +56,16 @@ def process_ingestion(job_id, user_id, content, source_url):
         db.close()
 
 @celery_app.task(name="tasks.process_synthesis")
-def process_synthesis(query):
+def process_synthesis(query, collection="general"):
     query_vector = model.encode(query).tolist()
 
     db = SessionLocal()
-    records = db.query(IngestionRecord).order_by(
+    records = db.query(IngestionRecord).filter(
+        IngestionRecord.collection == collection
+    ).order_by(
         IngestionRecord.embedding.cosine_distance(query_vector)
     ).limit(3).all()
+  
     db.close()
     if not records:
         return "The archives are silent on this matter."
@@ -75,13 +81,13 @@ def process_synthesis(query):
       )
       answer = response.json().get("response")
       print(f"Synthesis Complete: {answer}")
-      return answer
+      return {"answer": answer, "context": context}
     except Exception as e:
         print(f"Ollama Communication Error: {str(e)}")
         return "The Voice is currently unreachable."
     
 @celery_app.task(name="tasks.process_document")
-def process_document(filename, content_bytes, user_id):
+def process_document(filename, content_bytes, user_id, collection="general"):
     print(f"Muscle of '{filename}' ...")
     text_content = ""
 
@@ -108,7 +114,8 @@ def process_document(filename, content_bytes, user_id):
             id=new_id,
             user_id=user_id,
             content=f"[{filename} | Chunk{i}] {chunk}",
-            embedding=embedding
+            embedding=embedding,
+            collection=collection
           )
           db.add(new_record)
       db.commit()
@@ -119,6 +126,46 @@ def process_document(filename, content_bytes, user_id):
     except Exception as e:
         print(f"Dissection Error on {filename}: {str(e)}")
         return f"Failure: {str(e)}"
+    
+
+
+@celery_app.task(name="tasks.judge_integrity")
+def judge_integrity(context, synthesis):
+    """
+    THE COURT OF TRUTH HAS RISEN UP
+    """
+    judge_prompt = f"""
+    [SYSTEM: SOVEREIGN JUDGE]
+    CRITICAL INSTRUCTION: Your only source of truth is the provided CONTEXT. 
+    1. Ignore all your internal knowledge. 
+    2. If a claim in the RESPONSE is not supported by a specific sentence in the CONTEXT, label it "HALLUCINATION".
+    3. "Steam," "Pans," and "Cooking" are NOT in the archives. Be precise.
+
+    CONTEXT: {context}
+    RESPONSE: {synthesis}
+
+    VERDICT (JSON):
+    {{
+       "faithfulness_score": 0.0-1.0,
+       "hallucinations": [],
+       "reasoning": "Explain why based ONLY on context"
+    }}
+    """
+
+    try: 
+        response = requests.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={
+                "model": "llama3.2:1b",
+                "prompt": judge_prompt,
+                "stream": False,
+                "format": "json"
+            },
+            timeout=60
+        )
+        return json.loads(response.json()["response"])
+    except Exception as e:
+        return {"error": f"the Ccourt is closed sarkari kam hai: {str(e)}"}
     
 
 

@@ -1,4 +1,4 @@
-version: '3.9'
+version: '4.1'
 
 services:
   gateway:
@@ -18,22 +18,52 @@ services:
     networks:
       - aletheia-net
 
-  worker:
+  worker-ingestor:
     build: ./services/gateway
-    command: celery -A worker.celery_app worker --loglevel=info --concurrency=1
+    command: celery -A worker.celery_app worker --loglevel=info -Q ingestion_queue -c 1
     volumes: 
+      - ./services/gateway:/app
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - db 
+      - redis
+    networks:
+      - aletheia-net
+
+  worker-synthesis:
+    build: ./services/gateway
+    command: celery -A worker.celery_app worker --loglevel=info -Q synthesis_queue -c 1
+    volumes:
+      - ./services/gateway:/app
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=redis://redis:6379/0
+      - OLLAMA_URL=http://ollama:11434
+
+    depends_on:
+      - db
+      - redis
+      - ollama
+    networks:
+      - aletheia-net
+  worker-judge:
+    build: ./services/gateway
+    command: celery -A worker.celery_app worker --loglevel=info -Q judge_queue -c 1
+    volumes:
       - ./services/gateway:/app
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=redis://redis:6379/0
       - OLLAMA_URL=http://ollama:11434
     depends_on:
-      - db 
+      - db
       - redis
       - ollama
     networks:
       - aletheia-net
-  
+
   redis:
     image: redis:7-alpine
     container_name: aletheia-fabric

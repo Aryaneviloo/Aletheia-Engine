@@ -8,6 +8,7 @@ from celery import Celery
 
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File
 from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from sentence_transformers import SentenceTransformer
 from pydantic import BaseModel, HttpUrl, ConfigDict
 from typing import Optional, List
@@ -46,6 +47,7 @@ class IngestionRecord(Base):
     content = Column(Text, nullable=True)
     source_url = Column(String, nullable=True)
     embedding = Column(Vector(384))
+    collection = Column(String, default="general", index=True)
 
 class IngestionRequest(BaseModel):
     source_url: Optional[HttpUrl] = None
@@ -62,6 +64,7 @@ class IngestionResponse(BaseModel):
 class SearchRequest(BaseModel):
     query: str
     limit: int = 5
+    collection: str = "general"
 
 with engine.connect() as connection:
     connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
@@ -75,6 +78,13 @@ app = FastAPI(
     title="Aletheia Sovereign Engine",
     description="Enterprise Knowledge Synthesis Gateway",
     version="0.4.0"
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 def get_db():
@@ -142,29 +152,48 @@ def synthesize_knowledge(request: SearchRequest):
     It waits (blocks) for the Worker to return the result from the 'Voice'.
     """
     try:
-        # 1. Dispatch the task to the Fabric
-        # We use .get(timeout=) because Synthesis is a synchronous demand for the user
-        task = celery_app.send_task("tasks.process_synthesis", args=[request.query])
-        
-        # 2. Await the Worker's labor (Ollama takes time)
-        answer = task.get(timeout=120) 
-        
-        return {"answer": answer, "status": "Synthesized from background labor"}
+        task = celery_app.send_task(
+            "tasks.process_synthesis",
+              args=[request.query],
+              queue="synthesis_queue"
+        )
+        result = task.get(timeout=120) 
+        judge_task = celery_app.send_task(
+            "tasks.judge_integrity",
+            args=[result['context'], result['answer']],
+            queue="judge_queue"
+        )
+
+        return{
+            "answer": result['answer'],
+            "judge_id": judge_task.id,
+            "status": "Synthesized and under review"
+        }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"The Worker failed to synthesize: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+        
+        
     
 @app.post("/upload")
-async def upload_document(file: UploadFile = File(...), user_id: str="Aryan"):
+async def upload_document(
+    file: UploadFile = File(...),
+    user_id: str="Aryan",
+    collection: str = "general"
+):
     try:
         content = await file.read()
         filename = file.filename
 
-        task = celery_app.send_task("tasks.process_document", args=[filename, content, user_id])
+        task = celery_app.send_task(
+            "tasks.process_document", 
+            args=[filename, content, user_id, collection],
+            queue="ingestion_queue")
 
         return {
             "status": "Document queued for processing",
             "task_id": task.id,
-            "filename": filename
+            "filename": filename,
+            "collection": collection
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read: {str(e)}")
@@ -172,16 +201,18 @@ async def upload_document(file: UploadFile = File(...), user_id: str="Aryan"):
 
 
 @app.post("/stream")
-async def stream_synthesis(request: SearchRequest, db: Session = Depends(get_db)):
+async def stream_synthesis(request: SearchRequest, collection: str = "general", db: Session = Depends(get_db)):
     """
     Async Synthesis
     Lets have near zero latency via SSE
     """
 
     query_vector = model.encode(request.query).tolist()
-    records = db.query(IngestionRecord).order_by(
+    records = db.query(IngestionRecord).filter(
+        IngestionRecord.collection == collection
+    ).order_by(
         IngestionRecord.embedding.cosine_distance(query_vector)
-    ).limit(3).all()
+    ).limit(5).all()
 
     active_star_ids = [r.id for r in records]
 
@@ -195,6 +226,7 @@ async def stream_synthesis(request: SearchRequest, db: Session = Depends(get_db)
 
     async def token_generator():
         yield f"data: {json.dumps({'active_stars': active_star_ids})}\n\n"
+        full_response = ""
         async with httpx.AsyncClient(timeout=120.0) as client:
             async with client.stream(
                 "POST",
@@ -205,7 +237,23 @@ async def stream_synthesis(request: SearchRequest, db: Session = Depends(get_db)
                     if line:
                         chunk = json.loads(line)
                         token = chunk.get("response", "")
+                        full_response += token
                         yield f"data: {json.dumps({'token': token})}\n\n"
                         if chunk.get("done"):
-                            break
+                            judge_task = celery_app.send_task(
+                                "tasks.judge_integrity",
+                                args=[context, full_response],
+                                queue="judge_queue"
+                            )
     return StreamingResponse(token_generator(), media_type="text/event-stream")
+
+
+@app.get("/verdict/{task_id}")
+def get_judge_verdict(task_id: str):
+    """
+    CHeck if High COurt is open for peasants
+    """
+    res=celery_app.AsyncResult(task_id)
+    if res.ready():
+        return res.result
+    return{"status": "Deliverating...."}
