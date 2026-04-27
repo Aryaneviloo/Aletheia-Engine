@@ -1,29 +1,29 @@
+
 import os
 import io
 import httpx
 import numpy as np
 import uuid
 import json
+import datetime
 from celery import Celery
 
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
 from pydantic import BaseModel, HttpUrl, ConfigDict
 from typing import Optional, List
 
-from sqlalchemy import Column, String, Integer, Text, create_engine, text
+from sqlalchemy import Column, String, Integer, Text, create_engine, text, event
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from pgvector.sqlalchemy import Vector
+from sqlalchemy import DateTime
+
 
 from umap import UMAP
 from sklearn.cluster import KMeans
-
-
-
-
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
@@ -31,6 +31,7 @@ celery_app = Celery("aletheia_tasks", broker=REDIS_URL, backend=REDIS_URL)
 
 print("Director: Loading the BGE Faculty for real-time perception...")
 model = SentenceTransformer('BAAI/bge-small-en-v1.5')
+alchemist = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
 
 #database krke dekhte
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -49,6 +50,28 @@ class IngestionRecord(Base):
     embedding = Column(Vector(384))
     collection = Column(String, default="general", index=True)
 
+class Dialogue(Base):
+    __tablename__ = "dialogues"
+    id = Column(Integer, primary_key=True)
+    session_id = Column(String, index=True)
+    role = Column(String) # 'user' or 'assistant'
+    content = Column(Text)
+    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+
+@event.listens_for(Base.metadata, "before_create")
+def create_vector_extension(target, connection, **kw):
+    connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+
+try:
+    print("Director: Establishing Imperial Ledger...")
+    with engine.begin() as conn:
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+    Base.metadata.create_all(bind=engine)
+    print("Director: Schema confirmed. Vector faculty active.")
+except Exception as e:
+    print(f"Director: Initialization Warning: {e}")
+
+
 class IngestionRequest(BaseModel):
     source_url: Optional[HttpUrl] = None
     content: str
@@ -66,13 +89,6 @@ class SearchRequest(BaseModel):
     limit: int = 5
     collection: str = "general"
 
-with engine.connect() as connection:
-    connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-    connection.commit()
-
-# Build the blueprint
-Base.metadata.create_all(bind=engine)
-print("Director: Schema confirmed. The Ledger is ready.")
 
 app = FastAPI(
     title="Aletheia Sovereign Engine",
@@ -201,32 +217,66 @@ async def upload_document(
 
 
 @app.post("/stream")
-async def stream_synthesis(request: SearchRequest, collection: str = "general", db: Session = Depends(get_db)):
+async def stream_synthesis(
+    request: SearchRequest,
+    session_id: str = "default_session",
+    collection: str = "general",
+    db: Session = Depends(get_db)
+):
     """
     Async Synthesis
     Lets have near zero latency via SSE
     """
+    history_records = db.query(Dialogue).filter(
+        Dialogue.session_id == session_id
+    ).order_by(Dialogue.timestamp.desc()).limit(5).all()
 
+
+    chat_history = [{"role": h.role, "content": h.content} for h in reversed(history_records)]
     query_vector = model.encode(request.query).tolist()
-    records = db.query(IngestionRecord).filter(
+
+    candidates = db.query(IngestionRecord).filter(
         IngestionRecord.collection == collection
     ).order_by(
         IngestionRecord.embedding.cosine_distance(query_vector)
-    ).limit(5).all()
+    ).limit(10).all()
 
-    active_star_ids = [r.id for r in records]
+    async def silent_generator():
+        yield f"data: {json.dumps({'token': 'The archives of this province are silent.', 'done': True})}\n\n"
 
-    if not records:
-        async def silent_generator():
-            yield "data: {\"token\": \"The archives are silent on this matter.\", \"done\": true}\n\n"
+    if not candidates:
         return StreamingResponse(silent_generator(), media_type="text/event-stream")
+    pairs = [[request.query, c.content] for c in candidates]
+    scores = alchemist.predict(pairs)
+    scored_candidates = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
+    records = [c for score, c in scored_candidates[:5]]
     
+    active_star_ids = [r.id for r in records]
     context = '\n'.join([r.content for r in records])
-    prompt = f"Context: {context}\n\nQuestion: {request.query}"
+    history_str = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in chat_history])
+   
+    prompt = f"""
+[SYSTEM: SOVEREIGN VOICE]
+Treat the CONTEXT as your primary reality. Use the CONVERSATION HISTORY for continuity.
 
+[ARCHIVAL CONTEXT]
+{context}
+
+[CONVERSATION HISTORY]
+{history_str}
+
+[CURRENT INQUIRY]
+USER: {request.query}
+
+ASSISTANT:"""
+    
+    db.add(Dialogue(session_id=session_id, role="user", content=request.query))
+    db.commit()
+    
     async def token_generator():
         yield f"data: {json.dumps({'active_stars': active_star_ids})}\n\n"
         full_response = ""
+
         async with httpx.AsyncClient(timeout=120.0) as client:
             async with client.stream(
                 "POST",
@@ -239,12 +289,25 @@ async def stream_synthesis(request: SearchRequest, collection: str = "general", 
                         token = chunk.get("response", "")
                         full_response += token
                         yield f"data: {json.dumps({'token': token})}\n\n"
+
                         if chunk.get("done"):
+
+                            with SessionLocal() as final_db:
+                                assistant_msg = Dialogue(
+                                    session_id=session_id,
+                                    role="assistant",
+                                    content=full_response
+                                )
+                                final_db.add(assistant_msg)
+                                final_db.commit()
+
                             judge_task = celery_app.send_task(
                                 "tasks.judge_integrity",
                                 args=[context, full_response],
                                 queue="judge_queue"
                             )
+                            yield f"data: {json.dumps({'done': True, 'judge_id': judge_task.id})}\n\n"
+                            break
     return StreamingResponse(token_generator(), media_type="text/event-stream")
 
 

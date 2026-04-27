@@ -9,7 +9,7 @@ from sentence_transformers import SentenceTransformer
 from sqlalchemy import create_engine, Column, String, Text, text
 from sqlalchemy.orm import sessionmaker, declarative_base
 from pgvector.sqlalchemy import Vector
-
+from sentence_transformers import CrossEncoder
 
 REDIS_URL=os.getenv("REDIS_URL", "redis://redis:6379/0")
 celery_app=Celery("aletheia_tasks", broker=REDIS_URL, backend=REDIS_URL)
@@ -31,6 +31,8 @@ class IngestionRecord(Base):
 
 print("Worker: Loading the BGE")
 model=SentenceTransformer('BAAI/bge-small-en-v1.5')
+print("Worker: The Alchemist is needed")
+alchemist = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
 
 @celery_app.task(name="tasks.process_ingestion")
 def process_ingestion(job_id, user_id, content, source_url, collection="general"):
@@ -60,17 +62,22 @@ def process_synthesis(query, collection="general"):
     query_vector = model.encode(query).tolist()
 
     db = SessionLocal()
-    records = db.query(IngestionRecord).filter(
+    candidates = db.query(IngestionRecord).filter(
         IngestionRecord.collection == collection
     ).order_by(
         IngestionRecord.embedding.cosine_distance(query_vector)
-    ).limit(3).all()
-  
+    ).limit(10).all()
     db.close()
-    if not records:
-        return "The archives are silent on this matter."
 
-    context = '\n'.join([r.content for r in records])
+    if not candidates:
+        return "The archives are silent on this matter."
+    
+    pairs = [[query, c.content] for c in candidates]
+    scores = alchemist.predict(pairs)
+    scored_candidates = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
+    refined_shards = [c for score, c in scored_candidates[:3]]
+
+    context = '\n'.join([r.content for r in refined_shards])
     prompt = f"Context: {context}\n\Question: {query}"
 
     try:
