@@ -94,7 +94,7 @@ class IngestionResponse(BaseModel):
 class SearchRequest(BaseModel):
     query: str
     limit: int = 5
-    collection: List[str] = []
+    collections: List[str] = []
     session_id: str = "default_session"
 
 
@@ -120,7 +120,7 @@ def get_db():
         db.close()
 
 
-async def generate_blueprint(query: str, availaible_provinces: List[str]):
+async def generate_blueprint(query: str, available_provinces: List[str]):
     """
     The Strategist analyzes the query and maps it to the Empire's provinces.
     """
@@ -147,7 +147,7 @@ async def generate_blueprint(query: str, availaible_provinces: List[str]):
                     "model": "llama3.2:1b",
                     "prompt": prompt,
                     "stream": False,
-                    "format": json,
+                    "format": "json",
                     "options": {"temperature": 0, "num_predict": 128, "num_thread": 8},
                     "keep_alive": "60m"
                 }
@@ -316,7 +316,7 @@ async def stream_synthesis(
     Lets have near zero latency via SSE
     """
     history_records = db.query(Dialogue).filter(
-        Dialogue.session_id == session_id
+        Dialogue.session_id == request.session_id
     ).order_by(Dialogue.timestamp.desc()).limit(5).all()
     chat_history = [{"role": h.role, "content": h.content} for h in reversed(history_records)]
     
@@ -366,7 +366,7 @@ USER: {request.query}
 
 ASSISTANT:"""
     
-    db.add(Dialogue(session_id=session_id, role="user", content=request.query))
+    db.add(Dialogue(session_id=request.session_id, role="user", content=request.query))
     db.commit()
     
     async def token_generator():
@@ -394,7 +394,7 @@ ASSISTANT:"""
 
                             with SessionLocal() as final_db:
                                 assistant_msg = Dialogue(
-                                    session_id=session_id,
+                                    session_id=request.limitsession_id,
                                     role="assistant",
                                     content=full_response
                                 )
