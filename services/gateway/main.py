@@ -66,6 +66,13 @@ try:
     print("Director: Establishing Imperial Ledger...")
     with engine.begin() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        print("Optimizing traversal using HSNW Index")
+        conn.execute(text("""
+                          CREATE INDEX IF NOT EXISTS idx_ingestions_embedding 
+            ON ingestions USING hnsw (embedding vector_cosine_ops) 
+            WITH (m = 16, ef_construction = 64); 
+                         """ ))
+        
     Base.metadata.create_all(bind=engine)
     print("Director: Schema confirmed. Vector faculty active.")
 except Exception as e:
@@ -87,7 +94,9 @@ class IngestionResponse(BaseModel):
 class SearchRequest(BaseModel):
     query: str
     limit: int = 5
-    collection: str = "general"
+    collection: List[str] = []
+    session_id: str = "default_session"
+
 
 
 app = FastAPI(
@@ -109,6 +118,47 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+async def generate_blueprint(query: str, availaible_provinces: List[str]):
+    """
+    The Strategist analyzes the query and maps it to the Empire's provinces.
+    """
+    prompt = f"""
+    [SYSTEM: IMPERIAL STRATEGIST]
+    Your task is to decompose a complex query into sub-inquiries for specific knowledge provinces.
+    AVAILABLE PROVINCES: {available_provinces}
+
+    USER QUERY: "{query}"
+
+    Respond ONLY in raw JSON format:
+    {{
+      "provinces": ["list of relevant provinces"],
+      "sub_queries": [
+        {{"province": "name", "question": "targeted question for this province"}}
+      ]
+    }}
+    """
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try: 
+            resp = await client.post(
+                f"{OLLAMA_URL}/api/generate",
+                json={
+                    "model": "llama3.2:1b",
+                    "prompt": prompt,
+                    "stream": False,
+                    "format": json,
+                    "options": {"temperature": 0, "num_predict": 128, "num_thread": 8},
+                    "keep_alive": "60m"
+                }
+            )
+
+            blueprint_str = resp.json().get("response", "{}")
+            return json.loads(blueprint_str)
+        except Exception as e:
+            print("Strategist Error{e} getting back to general")
+            return{"provinces": ["general"], "sub_queries": [{"province": "general",
+                                                              "question": query}]}
 
 @app.get("/constellations")
 def get_constellation(db:Session = Depends(get_db)):
@@ -170,20 +220,59 @@ def synthesize_knowledge(request: SearchRequest):
     try:
         task = celery_app.send_task(
             "tasks.process_synthesis",
-              args=[request.query],
+              args=[request.query, request.collection],
               queue="synthesis_queue"
         )
-        result = task.get(timeout=120) 
+        result = task.get(timeout=120)
+        context = result['context']
+        initial_answer = result['answer']
+
         judge_task = celery_app.send_task(
             "tasks.judge_integrity",
-            args=[result['context'], result['answer']],
+            args=[context, initial_answer],
             queue="judge_queue"
         )
+        verdict = judge_task.get(timeout=120)
+        faithfulness = verdict.get('faithfulness_score', 0)
 
+        if faithfulness < 0.6:
+            print(f"Sovereign Alert: Integrity at {faithfulness}. Demanding Correction...")
+        
+             # We craft a "Refining Fire" prompt
+            correction_query = f"""
+            [SYSTEM: RECURSIVE CORRECTION]
+            The High Court found your previous response lacked archival integrity.
+            REASONING: {verdict.get('reasoning')}
+            HALLUCINATIONS DETECTED: {verdict.get('hallucinations')}
+        
+            ORIGINAL QUESTION: {request.query}
+        
+            TASK: Synthesize a new answer. Be hyper-literal. 
+            If the context does not support a claim, omit it.
+             """
+            retry_task = celery_app.send_task(
+                "tasks.process_synthesis",
+                args=[correction_query, request.collection])
+            retry_result = retry_task.get(timeout=120)
+
+            final_judge_task = celery_app.send_task(
+                "tasks.judge_integrity",
+                args=[context, retry_result['answer']]
+            )
+            final_verdict = final_judge_task.get(timeout=60)
+
+            return{
+                "answer": retry_result['answer'],
+                "verdict": final_verdict,
+                "iterations": 2,
+                "status": "Purified by Recursive Justice"
+            }
+        
         return{
-            "answer": result['answer'],
-            "judge_id": judge_task.id,
-            "status": "Synthesized and under review"
+            "answer": initial_answer,
+            "verdict": verdict,
+            "iterations": 2,
+            "status": "purified by judge again"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -220,7 +309,6 @@ async def upload_document(
 async def stream_synthesis(
     request: SearchRequest,
     session_id: str = "default_session",
-    collection: str = "general",
     db: Session = Depends(get_db)
 ):
     """
@@ -230,25 +318,33 @@ async def stream_synthesis(
     history_records = db.query(Dialogue).filter(
         Dialogue.session_id == session_id
     ).order_by(Dialogue.timestamp.desc()).limit(5).all()
-
-
     chat_history = [{"role": h.role, "content": h.content} for h in reversed(history_records)]
-    query_vector = model.encode(request.query).tolist()
+    
 
-    candidates = db.query(IngestionRecord).filter(
-        IngestionRecord.collection == collection
-    ).order_by(
-        IngestionRecord.embedding.cosine_distance(query_vector)
-    ).limit(10).all()
+    # II. STRATEGIST: Decide Provinces
+    all_p = [c[0] for c in db.query(IngestionRecord.collection).distinct().all()]
+    if not request.collections:
+        blueprint = await generate_blueprint(request.query, all_p)
+    else:
+        blueprint = {"provinces": request.collections, 
+                     "sub_queries": [{"province": p, "question": request.query} for p in request.collections]}
 
-    async def silent_generator():
-        yield f"data: {json.dumps({'token': 'The archives of this province are silent.', 'done': True})}\n\n"
 
-    if not candidates:
-        return StreamingResponse(silent_generator(), media_type="text/event-stream")
-    pairs = [[request.query, c.content] for c in candidates]
+    merged_candidates=[]
+    for sub in blueprint.get('sub_queries', []):
+        sub_vector = model.encode(sub['question']).tolist()
+        shards = db.query(IngestionRecord).filter(
+            IngestionRecord.collection == sub['province']
+        ).order_by(IngestionRecord.embedding.cosine_distance(sub_vector)).limit(10).all()
+        merged_candidates.extend(shards)
+
+    if not merged_candidates:
+        async def silent_gen(): yield f"data: {json.dumps({'token': 'The archives are silent.'})}\n\n"
+        return StreamingResponse(silent_gen(), media_type="text/event-stream")
+
+    pairs = [[request.query, c.content] for c in merged_candidates]
     scores = alchemist.predict(pairs)
-    scored_candidates = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)
+    scored_candidates = sorted(zip(scores, merged_candidates), key=lambda x: x[0], reverse=True)
     records = [c for score, c in scored_candidates[:5]]
     
     active_star_ids = [r.id for r in records]
@@ -281,7 +377,11 @@ ASSISTANT:"""
             async with client.stream(
                 "POST",
                 f"{OLLAMA_URL}/api/generate",
-                json={"model": "llama3.2:1b", "prompt": prompt, "stream": True}
+                json={"model": "llama3.2:1b",
+                       "prompt": prompt,
+                        "stream": True,
+                        "options": {"num_thread": 8, "temperature": 0.3},
+                        "keep_alive": "60m"}
             ) as response:
                 async for line in response.aiter_lines():
                     if line:

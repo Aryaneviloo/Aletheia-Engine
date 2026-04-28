@@ -11,6 +11,9 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 from pgvector.sqlalchemy import Vector
 from sentence_transformers import CrossEncoder
 
+
+#   Configuration
+
 REDIS_URL=os.getenv("REDIS_URL", "redis://redis:6379/0")
 celery_app=Celery("aletheia_tasks", broker=REDIS_URL, backend=REDIS_URL)
 
@@ -20,6 +23,8 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
+
+#  MODELS
 
 class IngestionRecord(Base):
     __tablename__ = "ingestions"
@@ -33,6 +38,10 @@ print("Worker: Loading the BGE")
 model=SentenceTransformer('BAAI/bge-small-en-v1.5')
 print("Worker: The Alchemist is needed")
 alchemist = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+
+
+# TASKS
+
 
 @celery_app.task(name="tasks.process_ingestion")
 def process_ingestion(job_id, user_id, content, source_url, collection="general"):
@@ -64,9 +73,7 @@ def process_synthesis(query, collection="general"):
     db = SessionLocal()
     candidates = db.query(IngestionRecord).filter(
         IngestionRecord.collection == collection
-    ).order_by(
-        IngestionRecord.embedding.cosine_distance(query_vector)
-    ).limit(10).all()
+    ).order_by(IngestionRecord.embedding.cosine_distance(query_vector)).limit(15).all()
     db.close()
 
     if not candidates:
@@ -83,7 +90,8 @@ def process_synthesis(query, collection="general"):
     try:
       response = requests.post(
         f"{OLLAMA_URL}/api/generate",
-        json={"model": "llama3.2:1b", "prompt": prompt, "stream": False},
+        json={"model": "llama3.2:1b", "prompt": prompt, "stream": False, "options": {"num_thread": 8, "temperature": 0.3},
+                "keep_alive": "60m"},
         timeout=90.0
       )
       answer = response.json().get("response")
@@ -107,11 +115,32 @@ def process_document(filename, content_bytes, user_id, collection="general"):
       else:
         text_content = content_bytes.decode('utf-8')
 
-      chunk_size = 1200
-      overlap = 200
-      chunks = [text_content[i:i + chunk_size] for i in range(0, len(text_content), chunk_size - overlap)]
-      print(f"Muscle: fragmented '{filename}' into {len(chunks)}")
+      separators = ["\n\n", "\n", ".", " ", ""]
+      chunk_size=1000
+      overlap=150
 
+      final_chunks = []
+      def recursive_split(text, seps):
+          if len(text) <= chunk_size:
+              return[text]
+          
+          for sep in seps:
+              if sep in text:
+                  parts = text.split(sep)
+
+                  current_group = ""
+                  results = []
+                  for p in parts:
+                      if len(current_group) + len(p) + len(sep) <= chunk_size:
+                          current_group += (sep if current_group else "") + p
+                      else:
+                          if current_group: results.append(current_group)
+                          current_group=p
+                  if current_group: results.append(current_group)
+                  return results        
+          return [text[:chunk_size]]   
+      
+      chunks = recursive_split(text_content, separators)
 
       db = SessionLocal()
       for i, chunk in enumerate(chunks):
@@ -120,7 +149,7 @@ def process_document(filename, content_bytes, user_id, collection="general"):
           new_record = IngestionRecord(
             id=new_id,
             user_id=user_id,
-            content=f"[{filename} | Chunk{i}] {chunk}",
+            content=f"[{filename} | Fragment {i}] {chunk.strip()}",
             embedding=embedding,
             collection=collection
           )
@@ -166,7 +195,9 @@ def judge_integrity(context, synthesis):
                 "model": "llama3.2:1b",
                 "prompt": judge_prompt,
                 "stream": False,
-                "format": "json"
+                "format": "json",
+                "options": {"temperature": 0, "num_thread": 8},
+                "keep_alive": "60m"
             },
             timeout=60
         )
